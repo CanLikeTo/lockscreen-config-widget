@@ -75,6 +75,15 @@ Item {
     return true
   }
 
+  Connections {
+    target: root.attachedIdle
+    function onShellChanged() {
+      // Losing the facade also loses the selection; never reclaim a foreign input.
+      if (root.attachedIdle && root.attachedIdle.shell !== facade)
+        root.choice = "default"
+    }
+  }
+
   onShellChanged: Qt.callLater(synchronizeService)
   onIdleServiceChanged: Qt.callLater(synchronizeService)
   Component.onDestruction: releaseOverride()

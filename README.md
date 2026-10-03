@@ -30,6 +30,8 @@ Only automatic screen locking changes. Screensaver timing, idle inhibitors, stay
 
 The controller uses the stock idle service's writable `shell` input and existing timeout bindings. This is an inspected implementation seam, **not a public timeout-override API**. Reverify after Omarchy changes the idle service. Missing/incompatible services or foreign ownership reject selections and show a status message; the plugin does not replace the idle implementation.
 
+If another controller replaces this plugin's idle input, the selected choice resets to Default without reclaiming ownership. Selection stays disabled during the conflict. Once the canonical input returns, Default is selected and an explicit duration must be chosen again.
+
 ## Installation
 
 For a published repository, use `omarchy plugin add` with its public GitHub repository URL and `--enable`. Review the source first: Omarchy plugins execute unsandboxed in the shell, and a longer lock timeout increases unattended access time.
@@ -72,6 +74,14 @@ This is not a lock-security enhancement. Existing inhibitors or stay-awake state
 Live checks exercised all three keyboard choices, mouse selection, checkmarks, popup anchoring, Escape/outside dismissal, and effective stock idle timing bindings. With screensaver 150, selecting 10 min produced lock 600 / lockDelay 450; Default and 5 min produced 300 / 150. Canonical and disk lock remained 300 during a real bar move/save, and all existing widget entries/settings were restored exactly. Disable and global reload restored Default.
 
 An isolated real-controller smoke checked invalid choices, missing services, foreign owners, active cycles, destruction restoration, and preservation of a foreign replacement. An unattended timed lock event, logout/reboot, and additional monitors were not exercised.
+
+Ownership regression tests run the real controller with isolated idle/host fixtures and no idle monitoring or locking. They cover foreign takeover and recovery, direct canonical-input replacement, explicit-choice transitions, and teardown with or without foreign ownership. With QtTest and the Qt 6 QML test runner installed, run from the repository root:
+
+```sh
+/usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
+```
+
+QtTest is a development-only dependency, not a plugin runtime requirement.
 
 ## License and publication
 

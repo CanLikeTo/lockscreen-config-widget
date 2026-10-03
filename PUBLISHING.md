@@ -23,6 +23,12 @@ omarchy plugin validate "$PWD"
 omarchy-shell shell summon local.lockscreen-config '{}'
 ```
 
+Run the ownership regression suite with QtTest available:
+
+```sh
+/usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
+```
+
 Exercise Default, 5 min, and 10 min through the popup. Compare:
 
 ```sh
@@ -32,7 +38,7 @@ omarchy-shell shell listShellConfig
 
 With 10 min selected, effective lock must be 600 while canonical `idle.lock` and `shell.json` retain the configured value. Verify disable/reload restores Default, then finish enabled at Default. The README records the tested runtime and verification limits; do not claim a timed lock or additional-monitor result unless observed.
 
-Keep exactly one root `manifest.json`, its declared `Service.qml` and `Widget.qml`, root README/LICENSE, this guide, and the preview. Do not commit credentials, personal desktop screenshots, configuration backups, generated smoke drivers, or symlinks. Do not add installer hooks: the standard Omarchy commands already manage installation and removal.
+Keep exactly one root `manifest.json`, its declared `Service.qml` and `Widget.qml`, root README/LICENSE, this guide, and the preview. Keep the ownership regression suite under `tests/`; it is not a runtime entry point. Do not commit credentials, personal desktop screenshots, configuration backups, generated smoke drivers, or symlinks. Do not add installer hooks: the standard Omarchy commands already manage installation and removal.
 
 ## Host the repository
 
