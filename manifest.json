@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "local.lockscreen-config",
+  "name": "Lock timeout",
+  "version": "1.0.0",
+  "author": "Lock timeout contributors",
+  "license": "MIT",
+  "description": "Temporarily select the screen-lock timeout from the bar.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {"service": "Service.qml", "barWidget": "Widget.qml"},
+  "barWidget": {
+    "displayName": "Lock timeout",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
