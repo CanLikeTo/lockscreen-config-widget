@@ -1,6 +1,6 @@
 # Lock timeout
 
-An Omarchy bar widget for temporarily extending automatic screen locking at home without changing your configured default.
+An Omarchy bar widget for temporarily extending automatic screen locking at home without leaving a permanent change to your configured default.
 
 ![Lock timeout popup with Default, 5 min, and 10 min choices](preview.png)
 
@@ -18,19 +18,23 @@ Default and 5 min remain distinct choices even when your configured default is 3
 
 Up/Down or j/k navigate, Enter/Space apply, Escape dismisses, and Tab/Shift-Tab switch bar popups. All monitor instances share the same selection.
 
-**Selections are memory-only.** Logout/reboot, shell restart, plugin disable, and global plugin reload reset to Default. Moving the widget does not reset it. Default follows later intentional changes to your configuration.
+This targets Omarchy 4.5. Choosing 5 min or 10 min writes only `idle.lock` in the existing user `~/.config/omarchy/shell.json` for the session. Choosing Default, disabling, removing, reloading the plugin, restarting the shell, and the next start after a crash all restore the previous `idle.lock`. Moving the widget rewrites `shell.json` but does not reset the selection when `idle.lock` is unchanged.
 
-Only automatic screen locking changes. Screensaver timing, idle inhibitors, stay-awake, suspend, and manual locking remain unchanged. To avoid changing an already-armed deadline, choices are disabled during an active idle cycle; activity/screensaver dismissal must clear that cycle first.
+An armed idle cycle keeps the deadline it was started with. The new timeout applies on the next cycle. Selection is not blocked because a cycle might be active.
+
+Only automatic screen locking changes. Screensaver timing, idle inhibitors, stay-awake, suspend, and manual locking remain unchanged. If you or another tool changes `idle.lock` to a value other than the choice this plugin applied, the selection is dropped and the plugin does not write the previous value back over that change.
+
+If `~/.config/omarchy/shell.json` is missing, empty, unreadable, not version 1, or not a JSON object, the plugin refuses the selection and shows a status. It does not create or overwrite that file.
 
 ## Requirements and compatibility
 
-- Omarchy Quattro with its stock `omarchy.idle` service and existing Quickshell installation.
-- Tested on Omarchy **4.0.3rc4-1**, Hyprland/Wayland, with a top bar on one monitor.
+- Omarchy 4.5 with its stock shell and existing Quickshell installation. The target release is 4.5.0-3.
+- A user `shell.json` at `~/.config/omarchy/shell.json`, version 1, strict JSON. A valid user file replaces defaults entirely; there is no deep merge.
 - No additional packages, network access, accounts, daemons, or build step are required by the plugin.
 
-The controller uses the stock idle service's writable `shell` input and existing timeout bindings. This is an inspected implementation seam, **not a public timeout-override API**. Reverify after Omarchy changes the idle service. Missing/incompatible services or foreign ownership reject selections and show a status message; the plugin does not replace the idle implementation.
+`omarchy.idle` reads `idle.lock` from that file and the shell hot-reloads it. There is no public temporary-timeout API. The plugin writes the existing user file and restores it; it does not replace the idle service. Missing or invalid configuration rejects selections and shows "Shell configuration unavailable."
 
-If another controller replaces this plugin's idle input, the selected choice resets to Default without reclaiming ownership. Selection stays disabled during the conflict. Once the canonical input returns, Default is selected and an explicit duration must be chosen again.
+Default means the configured `idle.lock`, or 300 seconds when that key is absent. 0 is a real "lock disabled" value, not a missing key. If the key was absent, restore deletes the key this plugin added. An empty `idle` object created for that key is removed; other `idle` fields added while the override is active are kept.
 
 ## Installation
 
@@ -41,7 +45,7 @@ To install from an inspected local checkout, first back up `~/.config/omarchy/sh
 ```sh
 omarchy plugin validate "$PWD"
 mkdir -p "$HOME/.config/omarchy/plugins/local.lockscreen-config"
-cp manifest.json Service.qml Widget.qml "$HOME/.config/omarchy/plugins/local.lockscreen-config/"
+cp manifest.json Service.qml Widget.qml LockTimeout.js "$HOME/.config/omarchy/plugins/local.lockscreen-config/"
 omarchy-shell shell rescanPlugins
 omarchy plugin enable local.lockscreen-config --section right
 ```
@@ -52,7 +56,7 @@ The supported enable command preserves other widgets/settings. Choose placement 
 omarchy bar move local.lockscreen-config --section right --after omarchy.power
 ```
 
-For local code updates, repeat validation, the three-file copy, and rescan. For git-managed installs, use `omarchy plugin update local.lockscreen-config`. Reloading resets the selection. No edits to `/usr/share/omarchy/` are needed.
+For local code updates, repeat validation, the copy, and rescan. For git-managed installs, use `omarchy plugin update local.lockscreen-config`. Reloading resets the selection to Default and restores the previous lock when the file still matches the applied choice. No edits to `/usr/share/omarchy/` are needed.
 
 ## Disable or remove
 
@@ -61,27 +65,23 @@ omarchy plugin disable local.lockscreen-config
 omarchy plugin remove local.lockscreen-config
 ```
 
-Disabling or removing restores the canonical timeout while the plugin still owns the idle input; it does not overwrite another controller's replacement. The remove command manages the plugin directory and layout entry. It does not remove unrelated plugins or reset the bar.
+Disabling, removing, or reloading destroys the service, which restores `idle.lock` when the file still matches the applied choice. It does not overwrite a lock value changed by someone else. The remove command manages the plugin directory and layout entry. It does not remove unrelated plugins or reset the bar.
 
 ## Configuration and permissions
 
-The plugin ID is `local.lockscreen-config`; there are no custom settings. The controller shallow-copies the shell configuration into a service-local view, replacing only `idle.lock`. It never mutates canonical `shellConfig`, writes configuration or selection state, invokes commands, or accesses the network. Normal Omarchy install/enable/move/remove commands manage the plugin files and bar entry separately.
+The plugin ID is `local.lockscreen-config`; there are no custom settings. While a duration is selected, the plugin updates only `idle.lock` in the existing user `shell.json`, preserving every other key, `idle.screensaver`, and the bar layout. It records the override in `~/.local/state/omarchy/local.lockscreen-config.json` before writing `shell.json`, and clears that state when the override ends. It does not create `shell.json`, invoke commands, or access the network. Normal Omarchy install/enable/move/remove commands manage the plugin files and bar entry separately.
 
 This is not a lock-security enhancement. Existing inhibitors or stay-awake state can still prevent automatic locking. Marketplace listing or automated checks are not a security audit or guarantee.
 
 ## Verification
 
-Live checks exercised all three keyboard choices, mouse selection, checkmarks, popup anchoring, Escape/outside dismissal, and effective stock idle timing bindings. With screensaver 150, selecting 10 min produced lock 600 / lockDelay 450; Default and 5 min produced 300 / 150. Canonical and disk lock remained 300 during a real bar move/save, and all existing widget entries/settings were restored exactly. Disable and global reload restored Default.
-
-An isolated real-controller smoke checked invalid choices, missing services, foreign owners, active cycles, destruction restoration, and preservation of a foreign replacement. An unattended timed lock event, logout/reboot, and additional monitors were not exercised.
-
-Ownership regression tests run the real controller with isolated idle/host fixtures and no idle monitoring or locking. They cover foreign takeover and recovery, direct canonical-input replacement, explicit-choice transitions, and teardown with or without foreign ownership. With QtTest and the Qt 6 QML test runner installed, run from the repository root:
+Ownership regression tests call the plugin's lock-timeout decisions with fixture documents. They do not read or write the home directory. They cover preservation of unrelated `shell.json` keys and screensaver timing, foreign lock values left untouched on restore, removal of an `idle.lock` key that was absent before the override, 5 min remaining distinct from Default when the configured lock is 300 seconds, and refusal to write a missing or invalid user file. With QtTest and the Qt 6 QML test runner installed, run from the repository root:
 
 ```sh
 /usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
 ```
 
-QtTest is a development-only dependency, not a plugin runtime requirement.
+QtTest is a development-only dependency, not a plugin runtime requirement. A timed lock event, logout/reboot, and additional monitors were not exercised for this change.
 
 ## License and publication
 
