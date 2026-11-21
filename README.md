@@ -20,7 +20,7 @@ Up/Down or j/k navigate, Enter/Space apply, Escape dismisses, and Tab/Shift-Tab 
 
 This targets Omarchy 4.5. Choosing 5 min or 10 min writes only `idle.lock` in the existing user `~/.config/omarchy/shell.json` for the session. Choosing Default, disabling, removing, reloading the plugin, restarting the shell, and the next start after a crash all restore the previous `idle.lock`. Moving the widget rewrites `shell.json` but does not reset the selection when `idle.lock` is unchanged.
 
-An armed idle cycle keeps the deadline it was started with. The new timeout applies on the next cycle. Selection is not blocked because a cycle might be active.
+An armed idle cycle keeps the deadline it was started with, and the new timeout applies on the next cycle, unless restore writes a configured `idle.lock` of 0. On Omarchy 4.5.0-3 the stock lock timer checks live `lockEnabled` when it fires, so restoring 0 while that timer is armed suppresses the pending lock rather than only later cycles. Selection is not blocked because a cycle might be active.
 
 Only automatic screen locking changes. Screensaver timing, idle inhibitors, stay-awake, suspend, and manual locking remain unchanged. If you or another tool changes `idle.lock` to a value other than the choice this plugin applied, the selection is dropped and the plugin does not write the previous value back over that change.
 

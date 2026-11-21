@@ -36,7 +36,7 @@ omarchy-shell idle status
 omarchy-shell shell listShellConfig
 ```
 
-With 10 min selected, `shell.json` `idle.lock` is 600 for the session. The previous lock is recorded in `~/.local/state/omarchy/local.lockscreen-config.json` and restored on Default, disable, or reload. Do not expect `shell.json` to keep the configured lock while an override is active. Finish enabled at Default so the configured lock is restored. The README records the verification limits; do not claim a timed lock or additional-monitor result unless observed.
+With 10 min selected, `shell.json` `idle.lock` is 600 for the session. The previous lock is recorded in `~/.local/state/omarchy/local.lockscreen-config.json` and restored on Default, disable, or reload. Do not expect `shell.json` to keep the configured lock while an override is active. Finish enabled at Default so the configured lock is restored. An armed idle cycle keeps its deadline, and the new timeout applies on the next cycle, except when restore writes a configured `idle.lock` of 0: that suppresses the pending lock because the stock timer checks live `lockEnabled`. Do not claim every restore keeps an armed deadline. The README records the verification limits; do not claim a timed lock or additional-monitor result unless observed.
 
 Keep exactly one root `manifest.json`, its declared `Service.qml` and `Widget.qml`, `LockTimeout.js`, root README/LICENSE, this guide, and the preview. Keep the ownership regression suite under `tests/`; it is not a runtime entry point. Do not commit credentials, personal desktop screenshots, configuration backups, generated smoke drivers, or symlinks. Do not add installer hooks: the standard Omarchy commands already manage installation and removal.
 
@@ -68,7 +68,7 @@ omarchy plugin add "$repo_url" --enable
 
 Open the official [plugin submission form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml). Enter the actual public root URL and the category/tags above. Suggested maintainer notes:
 
-> Temporarily selects the automatic lock timeout from the bar by writing `idle.lock` in the existing user shell.json for the session and restoring it on Default, disable, remove, reload, restart, and the next start after a crash. Choices are configured Default, 5 min, and 10 min. Screensaver timing is preserved. An armed idle cycle keeps its deadline. Targets Omarchy 4.5. No additional runtime dependencies, network access, command execution, or bundled executable binaries. Preview shows only the actual plugin popup.
+> Temporarily selects the automatic lock timeout from the bar by writing `idle.lock` in the existing user shell.json for the session and restoring it on Default, disable, remove, reload, restart, and the next start after a crash. Choices are configured Default, 5 min, and 10 min. Screensaver timing is preserved. An armed idle cycle keeps its deadline, except that restoring a configured idle.lock of 0 suppresses a pending lock because the stock timer checks lockEnabled when it fires. Targets Omarchy 4.5. No additional runtime dependencies, network access, command execution, or bundled executable binaries. Preview shows only the actual plugin popup.
 
 Before submitting, the owner must confirm every official checklist statement, including permission to publish the code and preview assets. Do not auto-check ownership or submit on the owner's behalf without explicit approval. There is no submission issue or marketplace approval implied by this package.
 

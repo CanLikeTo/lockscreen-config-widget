@@ -425,4 +425,119 @@ TestCase {
     verify(result.canSelect)
     compare(result.statusText, "")
   }
+
+  function assertRawLock(text, raw) {
+    var written = JSON.parse(text).idle.lock
+    if (raw === null) {
+      verify(written === null)
+      verify(text.indexOf('"lock": null') !== -1)
+      verify(written !== 0)
+      return
+    }
+    compare(written, raw)
+    compare(typeof written, typeof raw)
+    if (typeof raw === "string") verify(text.indexOf('"lock": "60"') !== -1)
+    if (raw === 60.9) {
+      verify(text.indexOf("60.9") !== -1)
+      verify(written !== 60)
+    }
+  }
+
+  function test_switchJournalAppliedAloneRestoresEitherSide() {
+    var shell = shellText(baseConfig(60))
+    var first = LockTimeout.select(shell, null, "600")
+    var applied = apply(shell, "", first)
+    var second = LockTimeout.select(applied.shell, first.memory, "300")
+    compare(second.actions[0].type, "writeState")
+    var journal = second.actions[0].text
+    var recorded = JSON.parse(journal)
+    compare(recorded.choice, "300")
+    compare(recorded.pendingChoice, "300")
+    compare(recorded.appliedChoice, "600")
+    compare(recorded.originalSeconds, 60)
+
+    var recovered = LockTimeout.recover(applied.shell, journal)
+    compare(JSON.parse(shellWrite(recovered)).idle.lock, 60)
+    verify(action(recovered, "clearState") !== null)
+
+    var foreign = LockTimeout.recover(shellText(baseConfig(120)), journal)
+    assertNoShellWrite(foreign)
+    verify(action(foreign, "clearState") !== null)
+
+    var originalDisk = LockTimeout.recover(shell, journal)
+    assertNoShellWrite(originalDisk)
+
+    var completed = apply(applied.shell, "", second)
+    var later = LockTimeout.recover(completed.shell, completed.state)
+    compare(JSON.parse(shellWrite(later)).idle.lock, 60)
+  }
+
+  function test_pendingJournalResolvesBeforeSelection() {
+    var shell = shellText(baseConfig(60))
+    var selected = LockTimeout.select(shell, null, "600")
+    var applied = apply(shell, "", selected)
+    var journal = applied.state
+    var pending = LockTimeout.recover("{", journal)
+    verify(pending.recoveryPending)
+    verify(!pending.canSelect)
+    verify(action(pending, "clearState") === null)
+    assertNoShellWrite(pending)
+
+    var readable = shellText(baseConfig(600))
+    var resolved = LockTimeout.shellChanged(
+      readable, false, "default", true, true, 600, 600, true, pending.recoveryPending, journal)
+    verify(action(resolved, "writeShell") !== null)
+    compare(JSON.parse(shellWrite(resolved)).idle.lock, 60)
+    compare(resolved.configuredLockSeconds, 60)
+    verify(!(resolved.canSelect && resolved.configuredLockSeconds === 600))
+    verify(!resolved.recoveryPending)
+
+    var after = apply(readable, journal, resolved)
+    var next = LockTimeout.select(after.shell, resolved.memory, "300")
+    compare(next.memory.originalSeconds, 60)
+    compare(next.configuredLockSeconds, 60)
+
+    var still = LockTimeout.shellChanged(
+      "{", false, "default", false, false, 600, null, false, true, journal)
+    verify(!still.canSelect)
+    verify(still.recoveryPending)
+    verify(action(still, "clearState") === null)
+    assertNoShellWrite(still)
+  }
+
+  function test_shellChangedWithoutPendingKeepsAppliedChoice() {
+    var shell = shellText(baseConfig(60))
+    var selected = LockTimeout.select(shell, null, "600")
+    var applied = apply(shell, "", selected)
+    var echoed = LockTimeout.shellChanged(
+      applied.shell, true, "600", true, true, 60, 60, true, false, applied.state)
+    compare(echoed.choice, "600")
+    compare(echoed.actions.length, 0)
+    verify(echoed.canSelect)
+    verify(!echoed.recoveryPending)
+  }
+
+  function test_restoreWritesRawLockValue() {
+    var samples = [60.9, "60", null]
+    for (var i = 0; i < samples.length; i++) {
+      var raw = samples[i]
+      var shell = shellText(baseConfig(raw))
+      var selected = LockTimeout.select(shell, null, "600")
+      compare(selected.configuredLockSeconds, LockTimeout.secondsFromConfig(raw, 300))
+      var recorded = JSON.parse(selected.actions[0].text).originalLock
+      if (raw === null) verify(recorded === null)
+      else {
+        compare(recorded, raw)
+        compare(typeof recorded, typeof raw)
+      }
+      compare(JSON.parse(shellWrite(selected)).idle.lock, 600)
+      verify(typeof JSON.parse(shellWrite(selected)).idle.lock === "number")
+
+      var applied = apply(shell, "", selected)
+      assertRawLock(shellWrite(LockTimeout.recover(applied.shell, applied.state)), raw)
+      assertRawLock(shellWrite(LockTimeout.recoverFields(
+        applied.shell, true, "600", true, true, selected.memory.originalSeconds, raw, true)), raw)
+      assertRawLock(shellWrite(LockTimeout.select(applied.shell, selected.memory, "default")), raw)
+    }
+  }
 }

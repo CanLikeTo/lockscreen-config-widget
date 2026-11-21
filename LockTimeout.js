@@ -37,12 +37,15 @@ function parseShell(text) {
 function lockSnapshot(config) {
   var idleExisted = isPlainObject(config.idle)
   var lockExisted = idleExisted && Object.prototype.hasOwnProperty.call(config.idle, "lock")
+  // Keep the JSON value. Normalized seconds are for display only.
+  var rawLock = lockExisted ? config.idle.lock : undefined
   return {
     idleExisted: idleExisted,
     lockExisted: lockExisted,
     seconds: lockExisted
-      ? secondsFromConfig(config.idle.lock, DEFAULT_LOCK_SECONDS)
-      : DEFAULT_LOCK_SECONDS
+      ? secondsFromConfig(rawLock, DEFAULT_LOCK_SECONDS)
+      : DEFAULT_LOCK_SECONDS,
+    rawLock: rawLock
   }
 }
 
@@ -56,12 +59,25 @@ function choiceSeconds(choice) {
   return -1
 }
 
+function isDurationChoice(choice) {
+  return choice === "300" || choice === "600"
+}
+
 function fileMatchesChoice(config, choice) {
   var seconds = choiceSeconds(choice)
   if (seconds < 0 || !isPlainObject(config) || !isPlainObject(config.idle)) return false
   if (!Object.prototype.hasOwnProperty.call(config.idle, "lock")) return false
   var raw = config.idle.lock
   return typeof raw === "number" && isFinite(raw) && raw === seconds
+}
+
+// A switch journal names both the override already on disk and the target of this write.
+function fileMatchesJournal(config, state) {
+  if (!state) return false
+  if (fileMatchesChoice(config, state.choice)) return true
+  if (fileMatchesChoice(config, state.pendingChoice)) return true
+  if (fileMatchesChoice(config, state.appliedChoice)) return true
+  return false
 }
 
 function cloneConfig(config) {
@@ -76,10 +92,10 @@ function isEmptyObject(value) {
   return true
 }
 
-function withLock(config, seconds) {
+function withLock(config, value) {
   var next = cloneConfig(config)
   if (!isPlainObject(next.idle)) next.idle = {}
-  next.idle.lock = seconds
+  next.idle.lock = value
   return next
 }
 
@@ -97,13 +113,26 @@ function serialize(config) {
 
 function serializeState(state) {
   if (!state || state.owned !== true) return ""
-  return JSON.stringify({
+  var record = {
     owned: true,
     choice: state.choice,
     lockExisted: state.lockExisted === true,
     idleExisted: state.idleExisted === true,
     originalSeconds: state.originalSeconds
-  }, null, 2) + "\n"
+  }
+  if (isDurationChoice(state.appliedChoice)) record.appliedChoice = state.appliedChoice
+  if (isDurationChoice(state.pendingChoice)) record.pendingChoice = state.pendingChoice
+  // Include null. JSON.stringify keeps it; do not drop the key or pass it through Number().
+  if (state.lockExisted === true && Object.prototype.hasOwnProperty.call(state, "originalLock"))
+    record.originalLock = state.originalLock
+  return JSON.stringify(record, null, 2) + "\n"
+}
+
+function takeDuration(parsed, key, state) {
+  if (!Object.prototype.hasOwnProperty.call(parsed, key)) return true
+  if (!isDurationChoice(parsed[key])) return false
+  state[key] = parsed[key]
+  return true
 }
 
 function parseState(text) {
@@ -112,18 +141,23 @@ function parseState(text) {
   try {
     var parsed = JSON.parse(raw)
     if (!isPlainObject(parsed) || parsed.owned !== true) return null
-    if (parsed.choice !== "300" && parsed.choice !== "600") return null
+    if (!isDurationChoice(parsed.choice)) return null
     if (typeof parsed.lockExisted !== "boolean") return null
     if (typeof parsed.idleExisted !== "boolean") return null
     if (typeof parsed.originalSeconds !== "number" || !isFinite(parsed.originalSeconds) || parsed.originalSeconds < 0)
       return null
-    return {
+    var state = {
       owned: true,
       choice: parsed.choice,
       lockExisted: parsed.lockExisted,
       idleExisted: parsed.idleExisted,
       originalSeconds: Math.floor(parsed.originalSeconds)
     }
+    if (!takeDuration(parsed, "appliedChoice", state)) return null
+    if (!takeDuration(parsed, "pendingChoice", state)) return null
+    if (state.lockExisted && Object.prototype.hasOwnProperty.call(parsed, "originalLock"))
+      state.originalLock = parsed.originalLock
+    return state
   } catch (error) {
     return null
   }
@@ -133,16 +167,20 @@ function ownedMemory(memory) {
   return memory && memory.owned === true ? memory : null
 }
 
-function decision(ok, choice, memory, actions, canSelect, statusText, configured, effective) {
+function decision(ok, choice, memory, actions, canSelect, statusText, configured, effective, recoveryPending) {
+  var hasOriginalLock = !!(memory && Object.prototype.hasOwnProperty.call(memory, "originalLock"))
   return {
     ok: ok,
     choice: choice,
     memory: memory || null,
     actions: actions || [],
-    canSelect: !!canSelect,
-    statusText: canSelect ? "" : (statusText || UNAVAILABLE),
+    canSelect: !!canSelect && !recoveryPending,
+    statusText: canSelect && !recoveryPending ? "" : (statusText || UNAVAILABLE),
     configuredLockSeconds: configured,
-    effectiveLockSeconds: effective
+    effectiveLockSeconds: effective,
+    recoveryPending: !!recoveryPending,
+    hasOriginalLock: hasOriginalLock,
+    originalLock: hasOriginalLock ? memory.originalLock : null
   }
 }
 
@@ -157,51 +195,80 @@ function inspect(shellText) {
   return decision(true, "default", null, [], true, "", info.seconds, info.seconds)
 }
 
-function memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds) {
-  if (!owned || (choice !== "300" && choice !== "600")) return null
-  return {
+function memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock) {
+  if (!owned || !isDurationChoice(choice)) return null
+  var memory = {
     owned: true,
     choice: choice,
     lockExisted: !!lockExisted,
     idleExisted: !!idleExisted,
     originalSeconds: originalSeconds
   }
+  // A var property can surface JSON null as undefined. The flag says the key was present.
+  if (hasOriginalLock) memory.originalLock = originalLock === undefined ? null : originalLock
+  return memory
 }
 
-function selectFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds, nextChoice) {
-  return select(shellText, memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds), nextChoice)
+function selectFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds, nextChoice, originalLock, hasOriginalLock) {
+  return select(shellText, memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock), nextChoice)
 }
 
-function reconcileFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds) {
-  return reconcile(shellText, memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds))
+function reconcileFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock) {
+  return reconcile(shellText, memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock))
 }
 
-function recoverFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds) {
-  var memory = memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds)
+function recoverFields(shellText, owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock) {
+  var memory = memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock)
   return recover(shellText, serializeState(memory))
 }
 
-
+// Watcher entry. A pending journal must be recovered before choices enable.
+function shellChanged(shellText, owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock, recoveryPending, stateText) {
+  if (recoveryPending) {
+    if (!textOf(stateText).trim()) {
+      var held = unavailable("default", null, originalSeconds, originalSeconds)
+      held.recoveryPending = true
+      held.canSelect = false
+      return held
+    }
+    var resolved = recover(shellText, stateText)
+    if (resolved.recoveryPending) resolved.canSelect = false
+    return resolved
+  }
+  return reconcile(shellText, memoryFrom(owned, choice, lockExisted, idleExisted, originalSeconds, originalLock, hasOriginalLock))
+}
 
 function snapshotFor(memory, config) {
   if (memory) {
-    return {
-      lockExisted: memory.lockExisted === true,
+    var existed = memory.lockExisted === true
+    var snap = {
+      lockExisted: existed,
       idleExisted: memory.idleExisted === true,
       originalSeconds: memory.originalSeconds
     }
+    if (existed) {
+      snap.originalLock = Object.prototype.hasOwnProperty.call(memory, "originalLock")
+        ? memory.originalLock
+        : memory.originalSeconds
+    }
+    return snap
   }
   var info = lockSnapshot(config)
-  return {
+  var fresh = {
     lockExisted: info.lockExisted,
     idleExisted: info.idleExisted,
     originalSeconds: info.seconds
   }
+  if (info.lockExisted) fresh.originalLock = info.rawLock
+  return fresh
 }
 
 function restoredConfig(config, snapshot) {
-  if (snapshot.lockExisted) return withLock(config, snapshot.originalSeconds)
-  return withoutLock(config, snapshot.idleExisted !== true)
+  if (!snapshot.lockExisted) return withoutLock(config, snapshot.idleExisted !== true)
+  var value = Object.prototype.hasOwnProperty.call(snapshot, "originalLock")
+    ? snapshot.originalLock
+    : snapshot.originalSeconds
+  return withLock(config, value)
 }
 
 function select(shellText, memory, nextChoice) {
@@ -244,10 +311,15 @@ function select(shellText, memory, nextChoice) {
   var nextMemory = {
     owned: true,
     choice: nextChoice,
+    pendingChoice: nextChoice,
     lockExisted: snapshot.lockExisted,
     idleExisted: snapshot.idleExisted,
     originalSeconds: snapshot.originalSeconds
   }
+  // Only a previous override is applied. The original disk value is not.
+  if (owned && isDurationChoice(owned.choice)) nextMemory.appliedChoice = owned.choice
+  if (snapshot.lockExisted)
+    nextMemory.originalLock = snapshot.originalLock
   return decision(true, nextChoice, nextMemory, [
     { type: "writeState", text: serializeState(nextMemory) },
     { type: "writeShell", text: serialize(withLock(config, choiceSeconds(nextChoice))) }
@@ -285,9 +357,12 @@ function recover(shellText, stateText) {
   }
   if (!config) {
     // Do not create or overwrite an unusable user file. Leave state for a later start.
-    return unavailable("default", null, state.originalSeconds, state.originalSeconds)
+    var pending = unavailable("default", null, state.originalSeconds, state.originalSeconds)
+    pending.recoveryPending = true
+    pending.canSelect = false
+    return pending
   }
-  if (fileMatchesChoice(config, state.choice)) {
+  if (fileMatchesJournal(config, state)) {
     var snapshot = snapshotFor(state, config)
     return decision(true, "default", null, [
       { type: "writeShell", text: serialize(restoredConfig(config, snapshot)) },

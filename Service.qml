@@ -31,6 +31,11 @@ Item {
   property bool lockExisted: false
   property bool idleExisted: false
   property int originalSeconds: 300
+  // A loose object dropped flags. Keep the raw JSON lock, including null, on a var.
+  property var originalLock: null
+  property bool hasOriginalLock: false
+  property bool recoveryPending: false
+  property string pendingStateText: ""
 
   property bool applying: false
   property bool ready: false
@@ -45,11 +50,22 @@ Item {
     root.idleExisted = !!(memory && memory.idleExisted)
     root.originalSeconds = memory && typeof memory.originalSeconds === "number"
       ? memory.originalSeconds : root.configuredLockSeconds
+    root.hasOriginalLock = !!(result && result.hasOriginalLock)
+      || !!(memory && Object.prototype.hasOwnProperty.call(memory, "originalLock"))
+    if (root.hasOriginalLock) {
+      var raw = memory && Object.prototype.hasOwnProperty.call(memory, "originalLock")
+        ? memory.originalLock : result.originalLock
+      root.originalLock = raw === undefined ? null : raw
+    } else {
+      root.originalLock = null
+    }
     root.choice = result.choice || "default"
     root.configuredLockSeconds = result.configuredLockSeconds
     root.effectiveLockSeconds = result.effectiveLockSeconds
-    root.canSelect = !!result.canSelect
+    root.recoveryPending = !!(result && result.recoveryPending)
+    root.canSelect = !!result.canSelect && !root.recoveryPending
     root.statusText = result.statusText || ""
+    if (!root.recoveryPending) root.pendingStateText = ""
   }
 
   function readFile(file) {
@@ -85,10 +101,11 @@ Item {
   }
 
   function selectChoice(nextChoice) {
-    if (root.released) return false
+    if (root.released || root.recoveryPending || !root.canSelect) return false
     var result = LockTimeout.selectFields(
       root.readFile(shellFile), root.owned, root.appliedChoice,
-      root.lockExisted, root.idleExisted, root.originalSeconds, String(nextChoice))
+      root.lockExisted, root.idleExisted, root.originalSeconds, String(nextChoice),
+      root.originalLock, root.hasOriginalLock)
     if (!root.applyActions(result.actions)) return false
     root.publish(result)
     return !!result.ok
@@ -96,16 +113,28 @@ Item {
 
   function handleShellChanged() {
     if (root.applying || !root.ready || root.released) return
-    var result = LockTimeout.reconcileFields(
+    // Recover a pending journal before reconcile can enable choices.
+    var result = LockTimeout.shellChanged(
       root.readFile(shellFile), root.owned, root.appliedChoice,
-      root.lockExisted, root.idleExisted, root.originalSeconds)
-    if (!root.applyActions(result.actions)) return
+      root.lockExisted, root.idleExisted, root.originalSeconds,
+      root.originalLock, root.hasOriginalLock,
+      root.recoveryPending, root.pendingStateText)
+    if (!root.applyActions(result.actions)) {
+      root.canSelect = false
+      return
+    }
     root.publish(result)
   }
 
   function recoverFrom(stateText) {
+    root.pendingStateText = stateText || ""
     var result = LockTimeout.recover(root.readFile(shellFile), stateText)
-    if (!root.applyActions(result.actions)) return
+    if (!root.applyActions(result.actions)) {
+      root.recoveryPending = true
+      root.canSelect = false
+      root.statusText = "Shell configuration unavailable."
+      return
+    }
     root.publish(result)
   }
 
@@ -137,14 +166,18 @@ Item {
   Component.onCompleted: {
     root.recoverFrom(root.readFile(stateFile))
     root.ready = true
+    if (root.recoveryPending) root.handleShellChanged()
   }
 
   Component.onDestruction: {
     if (root.released) return
     root.released = true
-    var result = LockTimeout.recoverFields(
-      root.readFile(shellFile), root.owned, root.appliedChoice,
-      root.lockExisted, root.idleExisted, root.originalSeconds)
+    var result = root.recoveryPending
+      ? LockTimeout.recover(root.readFile(shellFile), root.pendingStateText)
+      : LockTimeout.recoverFields(
+        root.readFile(shellFile), root.owned, root.appliedChoice,
+        root.lockExisted, root.idleExisted, root.originalSeconds,
+        root.originalLock, root.hasOriginalLock)
     root.applyActions(result.actions)
   }
 }
