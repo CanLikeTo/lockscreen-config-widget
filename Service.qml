@@ -1,90 +1,196 @@
 import QtQuick
+import Quickshell
+import Quickshell.Io
+import "LockTimeout.js" as LockTimeout
 
 Item {
   id: root
 
-  // The shell injects these after construction.
-  property var shell: null
-  property var manifest: null
+  // Empty paths resolve from HOME so tests can point both files at a fixture tree.
+  property string shellConfigPath: ""
+  property string statePath: ""
+
+  readonly property string homeDir: {
+    var home = Quickshell.env("HOME")
+    return home === undefined || home === null ? "" : String(home)
+  }
+  readonly property string resolvedShellConfigPath: shellConfigPath !== ""
+    ? shellConfigPath
+    : homeDir + "/.config/omarchy/shell.json"
+  readonly property string resolvedStatePath: statePath !== ""
+    ? statePath
+    : homeDir + "/.local/state/omarchy/local.lockscreen-config.json"
+
   property string choice: "default"
-  property QtObject attachedIdle: null
-  property QtObject attachedShell: null
+  property int configuredLockSeconds: 300
+  property int effectiveLockSeconds: 300
+  property bool canSelect: false
+  property string statusText: "Shell configuration unavailable."
+  property bool owned: false
+  property string appliedChoice: "default"
+  property bool lockExisted: false
+  property bool idleExisted: false
+  property int originalSeconds: 300
+  // A loose object dropped flags. Keep the raw JSON lock, including null, on a var.
+  property var originalLock: null
+  property bool hasOriginalLock: false
+  property bool recoveryPending: false
+  property string pendingStateText: ""
 
-  readonly property QtObject idleService: shell && !shell.pluginReloading
-    && typeof shell.serviceFor === "function" ? shell.serviceFor("omarchy.idle") : null
-  readonly property bool compatible: idleService !== null
-    && "shell" in idleService
-    && typeof idleService.secondsFromConfig === "function"
-    && typeof idleService.defaultLockSeconds === "number"
-    && typeof idleService.lockTimeoutSeconds === "number"
-    && typeof idleService.idledThisCycle === "boolean"
-  readonly property int configuredLockSeconds: {
-    if (!compatible || !shell) return 300
-    var config = shell.shellConfig
-    var idle = config && config.idle ? config.idle : ({})
-    return idleService.secondsFromConfig(idle.lock, idleService.defaultLockSeconds)
-  }
-  readonly property int effectiveLockSeconds: compatible
-    ? idleService.lockTimeoutSeconds : configuredLockSeconds
-  readonly property bool available: compatible
-    && (idleService.shell === shell || idleService.shell === facade)
-  readonly property bool canSelect: available && !idleService.idledThisCycle
-  readonly property string statusText: !compatible ? "Idle service unavailable."
-    : !available ? "Another plugin controls the idle timeout."
-    : !canSelect ? "Wait for activity before changing the timeout." : ""
+  property bool applying: false
+  property bool ready: false
+  property bool released: false
+  property bool writeFailed: false
 
-  QtObject {
-    id: facade
-    // Only this service-local view contains the override. Canonical config stays intact.
-    property var shellConfig: {
-      var original = root.shell && root.shell.shellConfig ? root.shell.shellConfig : ({})
-      var config = ({})
-      for (var key in original) config[key] = original[key]
-      var idle = ({})
-      var originalIdle = original.idle || ({})
-      for (var field in originalIdle) idle[field] = originalIdle[field]
-      idle.lock = root.choice === "600" ? 600 : 300
-      config.idle = idle
-      return config
+  function publish(result) {
+    var memory = result.memory
+    root.owned = !!(memory && memory.owned)
+    root.appliedChoice = root.owned ? String(memory.choice) : "default"
+    root.lockExisted = !!(memory && memory.lockExisted)
+    root.idleExisted = !!(memory && memory.idleExisted)
+    root.originalSeconds = memory && typeof memory.originalSeconds === "number"
+      ? memory.originalSeconds : root.configuredLockSeconds
+    root.hasOriginalLock = !!(result && result.hasOriginalLock)
+      || !!(memory && Object.prototype.hasOwnProperty.call(memory, "originalLock"))
+    if (root.hasOriginalLock) {
+      var raw = memory && Object.prototype.hasOwnProperty.call(memory, "originalLock")
+        ? memory.originalLock : result.originalLock
+      root.originalLock = raw === undefined ? null : raw
+    } else {
+      root.originalLock = null
     }
+    root.choice = result.choice || "default"
+    root.configuredLockSeconds = result.configuredLockSeconds
+    root.effectiveLockSeconds = result.effectiveLockSeconds
+    root.recoveryPending = !!(result && result.recoveryPending)
+    root.canSelect = !!result.canSelect && !root.recoveryPending
+    root.statusText = result.statusText || ""
+    if (!root.recoveryPending) root.pendingStateText = ""
   }
 
-  function releaseOverride() {
-    if (attachedIdle && attachedIdle.shell === facade)
-      attachedIdle.shell = attachedShell
-    attachedIdle = null
-    attachedShell = null
+  function readFile(file) {
+    file.reload()
+    return file.text() || ""
   }
 
-  function synchronizeService() {
-    if (attachedIdle === idleService && attachedShell === shell) return
-    releaseOverride()
-    choice = "default"
-    if (compatible && idleService.shell === shell) {
-      attachedIdle = idleService
-      attachedShell = shell
+  function writeFile(file, text) {
+    root.writeFailed = false
+    file.setText(text)
+    return !root.writeFailed
+  }
+
+  // State is written before shell.json. A failed state write must not touch shell.json.
+  // Returns the failed action index, or -1 when every action was written.
+  function applyActions(actions) {
+    var list = actions || []
+    root.applying = true
+    for (var i = 0; i < list.length; i++) {
+      var action = list[i]
+      var ok = true
+      if (action.type === "writeState") ok = root.writeFile(stateFile, action.text)
+      else if (action.type === "writeShell") ok = root.writeFile(shellFile, action.text)
+      else if (action.type === "clearState") ok = root.writeFile(stateFile, "")
+      if (!ok) {
+        root.applying = false
+        root.canSelect = false
+        root.statusText = "Shell configuration unavailable."
+        return i
+      }
     }
+    root.applying = false
+    return -1
   }
 
   function selectChoice(nextChoice) {
-    if (nextChoice !== "default" && nextChoice !== "300" && nextChoice !== "600") return false
-    synchronizeService()
-    if (!canSelect) return false
-    choice = nextChoice
-    idleService.shell = nextChoice === "default" ? shell : facade
-    return true
-  }
-
-  Connections {
-    target: root.attachedIdle
-    function onShellChanged() {
-      // Losing the facade also loses the selection; never reclaim a foreign input.
-      if (root.attachedIdle && root.attachedIdle.shell !== facade)
-        root.choice = "default"
+    if (root.released || root.recoveryPending || !root.canSelect) return false
+    var result = LockTimeout.selectFields(
+      root.readFile(shellFile), root.owned, root.appliedChoice,
+      root.lockExisted, root.idleExisted, root.originalSeconds, String(nextChoice),
+      root.originalLock, root.hasOriginalLock)
+    var failedAt = root.applyActions(result.actions)
+    if (failedAt >= 0) {
+      // The pending journal is already on disk. Do not publish the new choice:
+      // reconcile would treat the new lock as foreign and clear that journal.
+      var held = LockTimeout.retainPendingJournal(result.actions, failedAt)
+      if (held && held.recoveryPending) {
+        root.recoveryPending = true
+        root.pendingStateText = held.pendingStateText
+        root.canSelect = false
+        root.statusText = held.statusText || "Shell configuration unavailable."
+      }
+      return false
     }
+    root.publish(result)
+    return !!result.ok
   }
 
-  onShellChanged: Qt.callLater(synchronizeService)
-  onIdleServiceChanged: Qt.callLater(synchronizeService)
-  Component.onDestruction: releaseOverride()
+  function handleShellChanged() {
+    if (root.applying || !root.ready || root.released) return
+    // Recover a pending journal before reconcile can enable choices.
+    var result = LockTimeout.shellChanged(
+      root.readFile(shellFile), root.owned, root.appliedChoice,
+      root.lockExisted, root.idleExisted, root.originalSeconds,
+      root.originalLock, root.hasOriginalLock,
+      root.recoveryPending, root.pendingStateText)
+    if (root.applyActions(result.actions) >= 0) {
+      root.canSelect = false
+      return
+    }
+    root.publish(result)
+  }
+
+  function recoverFrom(stateText) {
+    root.pendingStateText = stateText || ""
+    var result = LockTimeout.recover(root.readFile(shellFile), stateText)
+    if (root.applyActions(result.actions) >= 0) {
+      root.recoveryPending = true
+      root.canSelect = false
+      root.statusText = "Shell configuration unavailable."
+      return
+    }
+    root.publish(result)
+  }
+
+  FileView {
+    id: shellFile
+    path: root.resolvedShellConfigPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    blockWrites: true
+    preload: false
+    blockAllReads: true
+    onFileChanged: root.handleShellChanged()
+    onSaveFailed: root.writeFailed = true
+  }
+
+  FileView {
+    id: stateFile
+    path: root.resolvedStatePath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    blockWrites: true
+    preload: false
+    blockAllReads: true
+    onSaveFailed: root.writeFailed = true
+  }
+
+  Component.onCompleted: {
+    root.recoverFrom(root.readFile(stateFile))
+    root.ready = true
+    if (root.recoveryPending) root.handleShellChanged()
+  }
+
+  Component.onDestruction: {
+    if (root.released) return
+    root.released = true
+    var result = root.recoveryPending
+      ? LockTimeout.recover(root.readFile(shellFile), root.pendingStateText)
+      : LockTimeout.recoverFields(
+        root.readFile(shellFile), root.owned, root.appliedChoice,
+        root.lockExisted, root.idleExisted, root.originalSeconds,
+        root.originalLock, root.hasOriginalLock)
+    root.applyActions(result.actions)
+  }
 }

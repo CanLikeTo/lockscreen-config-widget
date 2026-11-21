@@ -13,7 +13,7 @@ Panel {
   readonly property string choiceLabel: selectedChoice === "600" ? "10 min"
     : selectedChoice === "300" ? "5 min" : "Default"
   readonly property string statusText: timeoutController
-    ? timeoutController.statusText : "Idle service unavailable."
+    ? timeoutController.statusText : "Shell configuration unavailable."
   property int cursorIndex: 0
 
   implicitWidth: button.implicitWidth
@@ -108,6 +108,7 @@ Panel {
           width: parent.width
           visible: text !== ""
           text: root.statusText
+          textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: root.bar ? root.bar.foreground : Color.foreground
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
