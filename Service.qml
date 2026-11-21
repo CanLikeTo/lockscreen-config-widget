@@ -80,6 +80,7 @@ Item {
   }
 
   // State is written before shell.json. A failed state write must not touch shell.json.
+  // Returns the failed action index, or -1 when every action was written.
   function applyActions(actions) {
     var list = actions || []
     root.applying = true
@@ -93,11 +94,11 @@ Item {
         root.applying = false
         root.canSelect = false
         root.statusText = "Shell configuration unavailable."
-        return false
+        return i
       }
     }
     root.applying = false
-    return true
+    return -1
   }
 
   function selectChoice(nextChoice) {
@@ -106,7 +107,19 @@ Item {
       root.readFile(shellFile), root.owned, root.appliedChoice,
       root.lockExisted, root.idleExisted, root.originalSeconds, String(nextChoice),
       root.originalLock, root.hasOriginalLock)
-    if (!root.applyActions(result.actions)) return false
+    var failedAt = root.applyActions(result.actions)
+    if (failedAt >= 0) {
+      // The pending journal is already on disk. Do not publish the new choice:
+      // reconcile would treat the new lock as foreign and clear that journal.
+      var held = LockTimeout.retainPendingJournal(result.actions, failedAt)
+      if (held && held.recoveryPending) {
+        root.recoveryPending = true
+        root.pendingStateText = held.pendingStateText
+        root.canSelect = false
+        root.statusText = held.statusText || "Shell configuration unavailable."
+      }
+      return false
+    }
     root.publish(result)
     return !!result.ok
   }
@@ -119,7 +132,7 @@ Item {
       root.lockExisted, root.idleExisted, root.originalSeconds,
       root.originalLock, root.hasOriginalLock,
       root.recoveryPending, root.pendingStateText)
-    if (!root.applyActions(result.actions)) {
+    if (root.applyActions(result.actions) >= 0) {
       root.canSelect = false
       return
     }
@@ -129,7 +142,7 @@ Item {
   function recoverFrom(stateText) {
     root.pendingStateText = stateText || ""
     var result = LockTimeout.recover(root.readFile(shellFile), stateText)
-    if (!root.applyActions(result.actions)) {
+    if (root.applyActions(result.actions) >= 0) {
       root.recoveryPending = true
       root.canSelect = false
       root.statusText = "Shell configuration unavailable."

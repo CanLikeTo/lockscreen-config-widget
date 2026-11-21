@@ -71,7 +71,8 @@ function fileMatchesChoice(config, choice) {
   return typeof raw === "number" && isFinite(raw) && raw === seconds
 }
 
-// A switch journal names both the override already on disk and the target of this write.
+// A pending switch names the override on disk and the target of this write.
+// A committed journal names only the duration shell.json should hold.
 function fileMatchesJournal(config, state) {
   if (!state) return false
   if (fileMatchesChoice(config, state.choice)) return true
@@ -308,22 +309,64 @@ function select(shellText, memory, nextChoice) {
     ], true, "", snapshot.originalSeconds, snapshot.originalSeconds)
   }
 
+  // Published ownership matches only the new duration. A switch also records the
+  // previous override, but only until shell.json is written. The original disk
+  // value is never appliedChoice, so a first selection cannot clobber it.
   var nextMemory = {
     owned: true,
     choice: nextChoice,
-    pendingChoice: nextChoice,
     lockExisted: snapshot.lockExisted,
     idleExisted: snapshot.idleExisted,
     originalSeconds: snapshot.originalSeconds
   }
-  // Only a previous override is applied. The original disk value is not.
-  if (owned && isDurationChoice(owned.choice)) nextMemory.appliedChoice = owned.choice
   if (snapshot.lockExisted)
     nextMemory.originalLock = snapshot.originalLock
+  var nextShell = serialize(withLock(config, choiceSeconds(nextChoice)))
+  var committedText = serializeState(nextMemory)
+  if (owned && isDurationChoice(owned.choice) && owned.choice !== nextChoice) {
+    var pendingMemory = {
+      owned: true,
+      choice: nextChoice,
+      pendingChoice: nextChoice,
+      appliedChoice: owned.choice,
+      lockExisted: nextMemory.lockExisted,
+      idleExisted: nextMemory.idleExisted,
+      originalSeconds: nextMemory.originalSeconds
+    }
+    if (Object.prototype.hasOwnProperty.call(nextMemory, "originalLock"))
+      pendingMemory.originalLock = nextMemory.originalLock
+    return decision(true, nextChoice, nextMemory, [
+      { type: "writeState", text: serializeState(pendingMemory) },
+      { type: "writeShell", text: nextShell },
+      { type: "writeState", text: committedText }
+    ], true, "", snapshot.originalSeconds, choiceSeconds(nextChoice))
+  }
   return decision(true, nextChoice, nextMemory, [
-    { type: "writeState", text: serializeState(nextMemory) },
-    { type: "writeShell", text: serialize(withLock(config, choiceSeconds(nextChoice))) }
+    { type: "writeState", text: committedText },
+    { type: "writeShell", text: nextShell }
   ], true, "", snapshot.originalSeconds, choiceSeconds(nextChoice))
+}
+
+// A committed write can fail after the pending journal is on disk. Keep that
+// text so a later reconcile cannot clear the switch as a foreign edit.
+function retainPendingJournal(actions, failedIndex) {
+  var text = ""
+  if (actions && failedIndex > 0) {
+    var limit = failedIndex < actions.length ? failedIndex : actions.length
+    for (var i = 0; i < limit; i++) {
+      var action = actions[i]
+      if (!action || action.type !== "writeState") continue
+      var state = parseState(action.text)
+      if (state && isDurationChoice(state.appliedChoice) && isDurationChoice(state.pendingChoice))
+        text = action.text
+    }
+  }
+  if (!text) return null
+  var kept = parseState(text)
+  var held = decision(false, kept.choice, null, [], false, UNAVAILABLE,
+    kept.originalSeconds, choiceSeconds(kept.choice), true)
+  held.pendingStateText = text
+  return held
 }
 
 function reconcile(shellText, memory) {

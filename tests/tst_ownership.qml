@@ -172,6 +172,7 @@ TestCase {
     compare(restored.choice, "default")
     compare(restored.actions[0].type, "writeShell")
     compare(restored.actions[1].type, "clearState")
+    verify(action(restored, "writeState") === null)
     assertPreserved(shell, shellWrite(restored), 60, true)
     compare(restored.configuredLockSeconds, 60)
     compare(restored.effectiveLockSeconds, 60)
@@ -355,6 +356,8 @@ TestCase {
     var selected = LockTimeout.select(shell, null, "600")
     compare(selected.actions[0].type, "writeState")
     compare(selected.actions[1].type, "writeShell")
+    var firstJournal = JSON.parse(selected.actions[0].text)
+    verify(!Object.prototype.hasOwnProperty.call(firstJournal, "appliedChoice"))
     var crashed = { shell: shell, state: selected.actions[0].text }
     var recovered = LockTimeout.recover(crashed.shell, crashed.state)
     assertNoShellWrite(recovered)
@@ -459,6 +462,9 @@ TestCase {
     var recovered = LockTimeout.recover(applied.shell, journal)
     compare(JSON.parse(shellWrite(recovered)).idle.lock, 60)
     verify(action(recovered, "clearState") !== null)
+    var onNewDuration = LockTimeout.recover(shellText(baseConfig(300)), journal)
+    compare(JSON.parse(shellWrite(onNewDuration)).idle.lock, 60)
+    verify(action(onNewDuration, "clearState") !== null)
 
     var foreign = LockTimeout.recover(shellText(baseConfig(120)), journal)
     assertNoShellWrite(foreign)
@@ -540,4 +546,96 @@ TestCase {
       assertRawLock(shellWrite(LockTimeout.select(applied.shell, selected.memory, "default")), raw)
     }
   }
+  function lastWrite(result, type) {
+    var actions = result.actions || []
+    var found = null
+    for (var i = 0; i < actions.length; i++) {
+      if (actions[i].type === type) found = actions[i]
+    }
+    return found
+  }
+
+  function test_completedSwitchJournalMatchesOnlyNewDuration() {
+    var shell = shellText(baseConfig(60))
+    var first = LockTimeout.select(shell, null, "600")
+    var applied = apply(shell, "", first)
+    var second = LockTimeout.select(applied.shell, first.memory, "300")
+    compare(second.actions[0].type, "writeState")
+    compare(second.actions[1].type, "writeShell")
+    compare(second.actions[2].type, "writeState")
+    var committed = JSON.parse(second.actions[2].text)
+    compare(committed.choice, "300")
+    compare(committed.originalSeconds, 60)
+    verify(!Object.prototype.hasOwnProperty.call(committed, "appliedChoice"))
+    verify(!Object.prototype.hasOwnProperty.call(committed, "pendingChoice"))
+    verify(!Object.prototype.hasOwnProperty.call(second.memory, "appliedChoice"))
+    verify(!Object.prototype.hasOwnProperty.call(second.memory, "pendingChoice"))
+    compare(lastWrite(second, "writeState").text, second.actions[2].text)
+
+    var completed = apply(applied.shell, "", second)
+    var onDisk = JSON.parse(completed.state)
+    verify(!Object.prototype.hasOwnProperty.call(onDisk, "appliedChoice"))
+    verify(!Object.prototype.hasOwnProperty.call(onDisk, "pendingChoice"))
+    compare(JSON.parse(completed.shell).idle.lock, 300)
+
+    var replaced = LockTimeout.recover(shellText(baseConfig(600)), completed.state)
+    assertNoShellWrite(replaced)
+    verify(action(replaced, "clearState") !== null)
+    compare(JSON.parse(shellText(baseConfig(600))).idle.lock, 600)
+
+    var restored = LockTimeout.recover(completed.shell, completed.state)
+    compare(JSON.parse(shellWrite(restored)).idle.lock, 60)
+    verify(action(restored, "clearState") !== null)
+
+    var back = LockTimeout.select(completed.shell, second.memory, "default")
+    compare(back.actions[0].type, "writeShell")
+    compare(back.actions[1].type, "clearState")
+    verify(action(back, "writeState") === null)
+    compare(JSON.parse(shellWrite(back)).idle.lock, 60)
+  }
+
+  function test_failedCommittedWriteKeepsPendingJournal() {
+    var shell = shellText(baseConfig(60))
+    var first = LockTimeout.select(shell, null, "600")
+    var applied = apply(shell, "", first)
+    var second = LockTimeout.select(applied.shell, first.memory, "300")
+    var failedAt = second.actions.length - 1
+    compare(second.actions[failedAt].type, "writeState")
+    verify(!Object.prototype.hasOwnProperty.call(JSON.parse(second.actions[failedAt].text), "appliedChoice"))
+
+    var held = LockTimeout.retainPendingJournal(second.actions, failedAt)
+    verify(held !== null)
+    verify(held.recoveryPending)
+    verify(!held.canSelect)
+    compare(held.pendingStateText, second.actions[0].text)
+    verify(held.pendingStateText !== second.actions[failedAt].text)
+    var pending = JSON.parse(held.pendingStateText)
+    compare(pending.appliedChoice, "600")
+    compare(pending.pendingChoice, "300")
+    compare(pending.choice, "300")
+    compare(pending.originalSeconds, 60)
+    verify(action(held, "clearState") === null)
+    assertNoShellWrite(held)
+    verify(held.memory === null)
+
+    var newDisk = shellWrite(second)
+    var dropped = LockTimeout.reconcile(newDisk, first.memory)
+    verify(action(dropped, "clearState") !== null)
+    assertNoShellWrite(dropped)
+
+    var keptNew = LockTimeout.shellChanged(
+      newDisk, true, "600", true, true, 60, 60, true, held.recoveryPending, held.pendingStateText)
+    compare(JSON.parse(shellWrite(keptNew)).idle.lock, 60)
+    verify(action(keptNew, "clearState") !== null)
+    verify(!keptNew.recoveryPending)
+
+    var keptOld = LockTimeout.recover(applied.shell, held.pendingStateText)
+    compare(JSON.parse(shellWrite(keptOld)).idle.lock, 60)
+
+    var shellFailed = LockTimeout.retainPendingJournal(second.actions, 1)
+    verify(shellFailed.recoveryPending)
+    compare(shellFailed.pendingStateText, second.actions[0].text)
+    verify(LockTimeout.retainPendingJournal(second.actions, 0) === null)
+  }
+
 }

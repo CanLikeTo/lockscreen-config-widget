@@ -22,7 +22,7 @@ This targets Omarchy 4.5. Choosing 5 min or 10 min writes only `idle.lock` in th
 
 An armed idle cycle keeps the deadline it was started with, and the new timeout applies on the next cycle, unless restore writes a configured `idle.lock` of 0. On Omarchy 4.5.0-3 the stock lock timer checks live `lockEnabled` when it fires, so restoring 0 while that timer is armed suppresses the pending lock rather than only later cycles. Selection is not blocked because a cycle might be active.
 
-Only automatic screen locking changes. Screensaver timing, idle inhibitors, stay-awake, suspend, and manual locking remain unchanged. If you or another tool changes `idle.lock` to a value other than the choice this plugin applied, the selection is dropped and the plugin does not write the previous value back over that change.
+If you or another tool changes `idle.lock` to a value other than the choice this plugin applied, the selection is dropped and the plugin does not write the previous value back over that change. After a completed switch, only the new duration counts as applied, so the replaced duration is left alone.
 
 If `~/.config/omarchy/shell.json` is missing, empty, unreadable, not version 1, or not a JSON object, the plugin refuses the selection and shows a status. It does not create or overwrite that file.
 
@@ -75,7 +75,7 @@ This is not a lock-security enhancement. Existing inhibitors or stay-awake state
 
 ## Verification
 
-Ownership regression tests call the plugin's lock-timeout decisions with fixture documents. They do not read or write the home directory. They cover preservation of unrelated `shell.json` keys and screensaver timing, foreign lock values left untouched on restore, removal of an `idle.lock` key that was absent before the override, 5 min remaining distinct from Default when the configured lock is 300 seconds, and refusal to write a missing or invalid user file. With QtTest and the Qt 6 QML test runner installed, run from the repository root:
+Ownership regression tests call the plugin's lock-timeout decisions with fixture documents. They do not read or write the home directory. They cover preservation of unrelated `shell.json` keys and screensaver timing, foreign lock values left untouched on restore, removal of an `idle.lock` key that was absent before the override, 5 min remaining distinct from Default when the configured lock is 300 seconds, refusal to write a missing or invalid user file, a completed switch whose journal matches only the new duration, and a failed commit of that journal keeping the pending record. With QtTest and the Qt 6 QML test runner installed, run from the repository root:
 
 ```sh
 /usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
